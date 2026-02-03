@@ -1,4 +1,5 @@
-const { parse } = require('csv-parse/sync');
+const { parse } = require('csv-parse');
+const { Readable } = require('stream');
 const Lead = require('../models/Lead');
 
 const BATCH_SIZE = 100;
@@ -10,25 +11,30 @@ function isHeaderRow(row) {
 }
 
 /**
- * Parse CSV buffer and import leads. Skips header row if first cell is name/nome/email.
- * @param {Buffer} buffer - CSV file content
- * @returns {Promise<number>} - Number of imported leads
+ * Stream CSV buffer and import leads safely
+ * @param {Buffer} buffer
+ * @returns {Promise<number>}
  */
 async function importLeadsFromCSV(buffer) {
-  const rows = parse(buffer, {
-    relax_column_count: true,
+  let imported = 0;
+  let batch = [];
+  let isFirstRow = true;
+
+  const parser = parse({
     trim: true,
     skip_empty_lines: true,
+    relax_column_count: true,
   });
 
-  if (!rows || rows.length === 0) return 0;
+  const stream = Readable.from(buffer);
 
-  let start = 0;
-  if (isHeaderRow(rows[0])) start = 1;
+  for await (const row of stream.pipe(parser)) {
+    if (isFirstRow && isHeaderRow(row)) {
+      isFirstRow = false;
+      continue;
+    }
+    isFirstRow = false;
 
-  const leads = [];
-  for (let i = start; i < rows.length; i++) {
-    const row = rows[i];
     if (row.length < 2) continue;
 
     const name = (row[0] || '').trim();
@@ -37,22 +43,27 @@ async function importLeadsFromCSV(buffer) {
 
     if (!name && !email) continue;
 
-    leads.push({
+    batch.push({
       name: name || null,
       email: email || null,
       phone: phone || null,
       source: 'csv_import',
     });
+
+    if (batch.length >= BATCH_SIZE) {
+      await Lead.bulkCreate(batch, { validate: false });
+      imported += batch.length;
+      batch = []; // libera memória
+    }
   }
 
-  if (leads.length === 0) return 0;
-
-  for (let i = 0; i < leads.length; i += BATCH_SIZE) {
-    const batch = leads.slice(i, i + BATCH_SIZE);
-    await Lead.bulkCreate(batch);
+  // flush final
+  if (batch.length > 0) {
+    await Lead.bulkCreate(batch, { validate: false });
+    imported += batch.length;
   }
 
-  return leads.length;
+  return imported;
 }
 
 module.exports = { importLeadsFromCSV };
