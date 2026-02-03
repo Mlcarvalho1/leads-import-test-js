@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.local
+*.db
+data.db
+*.log
+coverage/
+.nyc_output/
+dist/
+build/
